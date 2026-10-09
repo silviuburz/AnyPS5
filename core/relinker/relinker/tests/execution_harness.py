@@ -243,16 +243,19 @@ def write_report(report, directory):
     directory.mkdir(parents=True, exist_ok=True)
     path = directory / ("linux_entry_argv-" + uuid.uuid4().hex + ".json")
     temporary = directory / ("." + path.name + ".tmp")
+    created = False
     try:
         with temporary.open("x", encoding="utf-8") as stream:
+            created = True
             json.dump(report, stream, indent=2, allow_nan=False)
             stream.write("\n")
         with temporary.open(encoding="utf-8") as stream:
             validate_report(json.load(stream))
         os.replace(temporary, path)
     finally:
-        try:
-            temporary.unlink()
-        except FileNotFoundError:
-            pass
+        if created:
+            try:
+                temporary.unlink()
+            except FileNotFoundError:
+                pass
     return path

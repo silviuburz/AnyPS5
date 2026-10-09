@@ -10,6 +10,7 @@ import signal
 import sys
 import tempfile
 import time
+import uuid
 import unittest
 from unittest.mock import patch
 
@@ -329,6 +330,15 @@ class FixtureReportTests(unittest.TestCase):
                 with self.assertRaises(KeyboardInterrupt):
                     write_report(self.report, directory)
             self.assertEqual(list(Path(directory).iterdir()), [])
+
+    def test_report_temp_collision_preserves_existing_file(self):
+        with tempfile.TemporaryDirectory(prefix="anyps5-report-collision-") as directory:
+            temporary = Path(directory) / ("." + "linux_entry_argv-" + "0" * 32 + ".json.tmp")
+            temporary.write_text("reserved")
+            with patch("execution_harness.uuid.uuid4", return_value=uuid.UUID(int=0)):
+                with self.assertRaises(FileExistsError):
+                    write_report(self.report, directory)
+            self.assertEqual(temporary.read_text(), "reserved")
 
 
 if __name__ == "__main__":

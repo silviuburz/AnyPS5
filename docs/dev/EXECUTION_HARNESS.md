@@ -1,6 +1,6 @@
-# Proposed bounded execution harness
+# Bounded execution harness
 
-Status: proposal only. No runner, command or result format described below is implemented by this document.
+Status: the first Linux x86-64 synthetic milestone is implemented. The separate follow-ups below remain proposals.
 
 ## Purpose and limits
 
@@ -8,7 +8,23 @@ Status: proposal only. No runner, command or result format described below is im
 
 The first milestone is a Linux x86-64 supervisor for one existing synthetic converted-guest probe. It needs Python's standard library, the existing relinker-only build, and no console, GPU, SDK, game files or new dependencies. This verifies the fixture's execution contract; it does not verify PS5 library semantics.
 
-This document specifies a bounded implementation task, not an investigation report. Runtime limitations remain in [Technical debt](TechnicalDebt.md).
+Runtime limitations remain in [Technical debt](TechnicalDebt.md).
+
+## Running the first milestone
+
+Use the existing [relinker-only build](BUILD.md#relinker-only) with `BUILD_TESTING=ON`. On Linux x86-64 with Python, normal CTest runs automatically include `linux_entry_argv` and `execution_harness`. To run only this milestone:
+
+```sh
+ctest --test-dir build-relinker -R '^(linux_entry_argv|execution_harness)$' --output-on-failure
+```
+
+The supervisor is [`execution_harness.py`](../../core/relinker/relinker/tests/execution_harness.py); its adversarial checks are [`test_execution_harness.py`](../../core/relinker/relinker/tests/test_execution_harness.py). Both tests have a 25-second CTest timeout. The fixture has one 20-second monotonic budget, reserving 0.5 seconds per active phase for cleanup, with a 0.1-second termination grace. Output retention is limited to 256 KiB per stream per phase.
+
+Each fixture invocation prints its report path. Reports have unique names under `<build>/tests/execution-reports/`, including failed invocations. They are build artifacts, not source files. Direct invocation accepts the relinker path and `--report-dir`; without that option it uses the system temporary directory's `anyps5-execution-reports` directory. Source directories are rejected as report destinations except for separate CMake build trees.
+
+Schema version 1 uses `identity`, `host`, `limits`, `expectation` and `phases` objects alongside the fixture, outcome, reason and elapsed time. Negative Python return codes identify signals; `signal` also records their positive number. Captured streams are UTF-8 text with replacement for undecodable bytes, accompanied by retained byte counts. `validate_report()` rejects missing fields, invalid types, unknown versions, invalid identities and limits, and incomplete or mismatched PASS observations. JSON parsing rejects truncated reports.
+
+CTest supplies source revision and dirty state captured **at CMake configuration time**, plus the build configuration. Reconfigure after changing or committing sources to refresh that identity. Unknown identity fields are JSON `null`. SHA-256 identifies the fixture bytes, relinker and generated executable. Only the reviewed synthetic argv expectations are accepted; reports contain no hardware expectation or PS5-equivalence claim. The existing progress counts and badges are unchanged.
 
 ## Existing starting point
 
@@ -16,7 +32,7 @@ This document specifies a bounded implementation task, not an investigation repo
 
 [`core/relinker/CMakeLists.txt`](../../core/relinker/CMakeLists.txt) registers `linux_entry_argv` with `$<TARGET_FILE:relinker>` when Python is available. This exercises generated guest execution rather than host-linked library calls. It does not exercise the patched system libraries.
 
-Keep the fixture and its expectations. Replace its process-launch plumbing with a small helper under the existing relinker test directory. Do not build a generic manifest engine or modify the ELF conversion algorithm in this milestone.
+The fixture and its expectations are unchanged. Its process-launch plumbing uses the small helper under the existing relinker test directory. There is no generic manifest engine or change to the ELF conversion algorithm in this milestone.
 
 ## First implementation
 

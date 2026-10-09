@@ -217,8 +217,41 @@ if(BUILD_TESTING)
             ${CMAKE_CURRENT_SOURCE_DIR}/relinker/tests/test_linux_dynamic_strings.py $<TARGET_FILE:relinker>)
         add_test(NAME executable_segments COMMAND ${Python3_EXECUTABLE}
             ${CMAKE_CURRENT_SOURCE_DIR}/relinker/tests/test_executable_segments.py $<TARGET_FILE:relinker>)
-        add_test(NAME linux_entry_argv COMMAND ${Python3_EXECUTABLE}
-            ${CMAKE_CURRENT_SOURCE_DIR}/relinker/tests/test_linux_entry_argv.py $<TARGET_FILE:relinker>)
+        if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64)$")
+            set(harnessRevision "unknown")
+            set(harnessDirty "unknown")
+            find_package(Git QUIET)
+            if(Git_FOUND)
+                execute_process(COMMAND ${GIT_EXECUTABLE} rev-parse HEAD
+                    WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
+                    OUTPUT_VARIABLE harnessRevision OUTPUT_STRIP_TRAILING_WHITESPACE
+                    RESULT_VARIABLE harnessRevisionStatus)
+                if(NOT harnessRevisionStatus EQUAL 0)
+                    set(harnessRevision "unknown")
+                endif()
+                execute_process(COMMAND ${GIT_EXECUTABLE} status --porcelain
+                    WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
+                    OUTPUT_VARIABLE harnessChanges RESULT_VARIABLE harnessDirtyStatus)
+                if(harnessDirtyStatus EQUAL 0)
+                    if(harnessChanges STREQUAL "")
+                        set(harnessDirty "false")
+                    else()
+                        set(harnessDirty "true")
+                    endif()
+                endif()
+            endif()
+            add_test(NAME linux_entry_argv COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/relinker/tests/test_linux_entry_argv.py $<TARGET_FILE:relinker>
+                --report-dir ${ANYPS5_TEST_OUTPUT_DIRECTORY}/execution-reports
+                --revision ${harnessRevision} --dirty ${harnessDirty} --configuration "$<CONFIG>")
+            add_test(NAME execution_harness COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/relinker/tests/test_execution_harness.py $<TARGET_FILE:relinker>)
+            set_tests_properties(linux_entry_argv execution_harness PROPERTIES TIMEOUT 25)
+        else()
+            add_test(NAME linux_entry_argv COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/relinker/tests/test_linux_entry_argv.py $<TARGET_FILE:relinker>)
+            message(STATUS "Bounded guest execution requires Linux x86-64; retaining argv conversion check")
+        endif()
         add_test(NAME windows_gui COMMAND ${Python3_EXECUTABLE}
             ${CMAKE_CURRENT_SOURCE_DIR}/relinker/tests/test_windows_gui.py $<TARGET_FILE:relinker>)
         add_test(NAME windows_address_space COMMAND ${Python3_EXECUTABLE}

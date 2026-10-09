@@ -1,0 +1,40 @@
+name: Fork Linux relinker proof
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fork-relinker-proof-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  relinker:
+    if: github.repository == 'silviuburz/AnyPS5'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Configure Linux x86-64 relinker tests
+        run: cmake -S . -B build-relinker -G Ninja -DCMAKE_BUILD_TYPE=Release -DANYPS5_RELINKER_ONLY=ON -DBUILD_TESTING=ON
+      - name: Build
+        run: cmake --build build-relinker --parallel 3
+      - name: Check test registration
+        run: python3 tools/check_test_registration.py build-relinker
+      - name: Run CTest
+        run: ctest --test-dir build-relinker --output-on-failure --timeout 30 --parallel 3 --output-log build-relinker/ctest.log
+      - name: Upload execution reports and CTest log
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: relinker-proof-${{ github.sha }}
+          path: |
+            build-relinker/ctest.log
+            build-relinker/tests/execution-reports/
+          if-no-files-found: warn

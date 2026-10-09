@@ -37,6 +37,7 @@ def run_fixture(relinker, report_directory, revision=None, dirty=None, configura
     from execution_harness import OUTPUT_LIMIT, GRACE, CLEANUP_BUDGET
     from execution_harness import file_hash, phase_passed, supervise, write_report
 
+    relinker = Path(relinker).resolve()
     started = time.monotonic()
     deadline = started + budget
     image = argv_fixture()
@@ -65,7 +66,7 @@ def run_fixture(relinker, report_directory, revision=None, dirty=None, configura
             source.write_bytes(image)
             conversion = supervise(
                 [str(relinker), "--skip-sce-module", str(source), str(output)],
-                deadline, "conversion", 0)
+                deadline, "conversion", 0, cwd=directory)
             report["phases"].append(conversion)
             if relinker.is_file():
                 report["identity"]["relinker_sha256"] = file_hash(relinker)
@@ -75,7 +76,8 @@ def run_fixture(relinker, report_directory, revision=None, dirty=None, configura
                 report["identity"]["generated_sha256"] = file_hash(output)
                 output.chmod(0o755)
                 for arguments, expected in ((["Z"], -signal.SIGTRAP), (["Z", "extra"], -signal.SIGILL)):
-                    phase = supervise([str(output), *arguments], deadline, " ".join(arguments), expected)
+                    phase = supervise([str(output), *arguments], deadline, " ".join(arguments),
+                                      expected, cwd=directory)
                     report["phases"].append(phase)
                     if not phase_passed(phase):
                         report["reason"] = phase_failure(phase)

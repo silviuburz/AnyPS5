@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import resource
 import selectors
+import shutil
 import signal
 import subprocess
 import time
@@ -37,9 +38,16 @@ def _kill_group(process, sig):
         pass
 
 
-def supervise(command, deadline, phase, expected):
+def supervise(command, deadline, phase, expected, cwd=None):
     """The deadline includes cleanup; children must not escape their session."""
     started = time.monotonic()
+    command = list(command)
+    executable = command[0]
+    if os.path.dirname(executable):
+        executable = str(Path(executable).resolve())
+    else:
+        executable = shutil.which(executable) or executable
+    command[0] = executable
     result = {
         "case": phase, "command": command, "expected_returncode": expected,
         "returncode": None, "signal": None, "timeout": False,
@@ -57,7 +65,7 @@ def supervise(command, deadline, phase, expected):
         process = subprocess.Popen(
             command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
             stderr=subprocess.PIPE, start_new_session=True,
-            preexec_fn=_disable_core_dumps)
+            preexec_fn=_disable_core_dumps, cwd=cwd)
         with selectors.DefaultSelector() as selector:
             for name in buffers:
                 stream = getattr(process, name)
@@ -93,17 +101,29 @@ def supervise(command, deadline, phase, expected):
                         result["output_limit"] = True
     except KeyboardInterrupt:
         result["interrupted"] = True
-        result["error"] = "supervisor interrupted"
+        result["error"] = result["error"] or "supervisor interrupted"
     except (OSError, ValueError) as error:
         result["error"] = str(error)
     finally:
         if process is not None:
             if not killed:
                 _kill_group(process, signal.SIGTERM)
-                time.sleep(min(GRACE, max(0, deadline - time.monotonic())))
+                try:
+                    time.sleep(min(GRACE, max(0, deadline - time.monotonic())))
+                except KeyboardInterrupt:
+                    result["interrupted"] = True
+                    result["error"] = result["error"] or "supervisor interrupted"
                 _kill_group(process, signal.SIGKILL)
             try:
                 process.wait(timeout=max(0.01, min(GRACE, deadline - time.monotonic())))
+            except KeyboardInterrupt:
+                result["interrupted"] = True
+                result["error"] = result["error"] or "supervisor interrupted"
+                _kill_group(process, signal.SIGKILL)
+                try:
+                    process.wait(timeout=GRACE)
+                except (subprocess.TimeoutExpired, KeyboardInterrupt):
+                    result["error"] = "direct child could not be reaped"
             except subprocess.TimeoutExpired:
                 result["error"] = "direct child could not be reaped"
             result["returncode"] = process.returncode

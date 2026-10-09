@@ -183,6 +183,9 @@ def validate_report(report):
             raise ValueError("malformed command")
         if phase["case"] not in ("conversion", "Z", "Z extra") or phase["case"] in seen:
             raise ValueError("unknown or duplicate phase")
+        expected = 0 if phase["case"] == "conversion" else expectation["cases"][phase["case"]]
+        if phase["expected_returncode"] != expected:
+            raise ValueError("phase uses an unreviewed expectation")
         seen.append(phase["case"])
         code = phase["returncode"]
         if phase["signal"] != (-code if code is not None and code < 0 else None):
@@ -202,10 +205,6 @@ def validate_report(report):
             raise ValueError("PASS exceeded total budget")
         if seen != ["conversion", "Z", "Z extra"] or not all(map(phase_passed, report["phases"])):
             raise ValueError("PASS requires all complete matching phases")
-        for phase in report["phases"]:
-            expected = 0 if phase["case"] == "conversion" else expectation["cases"][phase["case"]]
-            if phase["expected_returncode"] != expected:
-                raise ValueError("PASS uses an unreviewed expectation")
         if any(report["identity"][key] is None for key in (
                 "fixture_sha256", "relinker_sha256", "generated_sha256")):
             raise ValueError("PASS lacks artifact identities")

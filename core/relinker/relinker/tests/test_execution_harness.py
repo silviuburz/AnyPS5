@@ -74,7 +74,7 @@ class SupervisorTests(unittest.TestCase):
         while time.monotonic() < deadline:
             try:
                 state = Path(f"/proc/{pid}/stat").read_text().split(") ")[1].split()[0]
-            except FileNotFoundError:
+            except (FileNotFoundError, ProcessLookupError):
                 return
             if state == "Z":
                 return
@@ -249,6 +249,11 @@ class FixtureReportTests(unittest.TestCase):
             report = copy.deepcopy(self.report)
             report["outcome"] = outcome
             report["phases"][1]["timeout"] = True
+            with self.assertRaises(ValueError):
+                validate_report(report)
+            report["phases"][1].update(
+                timeout=False, returncode=-signal.SIGSEGV, signal=signal.SIGSEGV,
+                expected_returncode=-signal.SIGSEGV)
             with self.assertRaises(ValueError):
                 validate_report(report)
         with self.assertRaises(json.JSONDecodeError):

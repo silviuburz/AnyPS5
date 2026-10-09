@@ -242,9 +242,17 @@ def write_report(report, directory):
             raise ValueError("reports must be outside the source tree or in a CMake build tree")
     directory.mkdir(parents=True, exist_ok=True)
     path = directory / ("linux_entry_argv-" + uuid.uuid4().hex + ".json")
-    with path.open("x", encoding="utf-8") as stream:
-        json.dump(report, stream, indent=2, allow_nan=False)
-        stream.write("\n")
-    with path.open(encoding="utf-8") as stream:
-        validate_report(json.load(stream))
+    temporary = directory / ("." + path.name + ".tmp")
+    try:
+        with temporary.open("x", encoding="utf-8") as stream:
+            json.dump(report, stream, indent=2, allow_nan=False)
+            stream.write("\n")
+        with temporary.open(encoding="utf-8") as stream:
+            validate_report(json.load(stream))
+        os.replace(temporary, path)
+    finally:
+        try:
+            temporary.unlink()
+        except FileNotFoundError:
+            pass
     return path

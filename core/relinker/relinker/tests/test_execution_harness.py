@@ -263,9 +263,18 @@ class FixtureReportTests(unittest.TestCase):
                         report, path = run_fixture(RELINKER, self.directory.name, budget=1.0)
                 self.assertEqual(report["outcome"], "FAIL")
                 self.assertIn("Z failed", report["reason"])
+                if "SIGSEGV" in code:
+                    self.assertIn("signal=SIGSEGV", report["reason"])
+                    self.assertIn("expected_signal=SIGTRAP", report["reason"])
                 self.assertEqual(len(report["phases"]), 2)
                 self.assertLess(report["elapsed_seconds"], 1.0)
                 validate_report(json.loads(path.read_text()))
+
+    def test_report_write_failure_is_not_retried(self):
+        with patch("execution_harness.write_report", side_effect=ValueError("report destination rejected")) as writer:
+            with self.assertRaisesRegex(ValueError, "report destination rejected"):
+                run_fixture(RELINKER, self.directory.name)
+        self.assertEqual(writer.call_count, 1)
 
     def test_malformed_reports(self):
         for key in self.report:
@@ -313,6 +322,13 @@ class FixtureReportTests(unittest.TestCase):
             json.loads(self.path.read_text()[:-10])
         with self.assertRaises(ValueError):
             write_report(self.report, Path(__file__).parent)
+
+    def test_interrupted_report_write_leaves_no_partial_report(self):
+        with tempfile.TemporaryDirectory(prefix="anyps5-interrupted-report-") as directory:
+            with patch("execution_harness.json.dump", side_effect=KeyboardInterrupt):
+                with self.assertRaises(KeyboardInterrupt):
+                    write_report(self.report, directory)
+            self.assertEqual(list(Path(directory).iterdir()), [])
 
 
 if __name__ == "__main__":

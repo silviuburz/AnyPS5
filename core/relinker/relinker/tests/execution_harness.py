@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import resource
 import selectors
+import shutil
 import signal
 import subprocess
 import time
@@ -37,9 +38,18 @@ def _kill_group(process, sig):
         pass
 
 
-def supervise(command, deadline, phase, expected):
+def supervise(command, deadline, phase, expected, cwd=None):
     """The deadline includes cleanup; children must not escape their session."""
     started = time.monotonic()
+    command = list(command)
+    executable = command[0]
+    if os.path.dirname(executable):
+        executable = str(Path(executable).resolve())
+    else:
+        executable = shutil.which(executable) or executable
+        if os.path.exists(executable):
+            executable = str(Path(executable).resolve())
+    command[0] = executable
     result = {
         "case": phase, "command": command, "expected_returncode": expected,
         "returncode": None, "signal": None, "timeout": False,
@@ -57,7 +67,7 @@ def supervise(command, deadline, phase, expected):
         process = subprocess.Popen(
             command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
             stderr=subprocess.PIPE, start_new_session=True,
-            preexec_fn=_disable_core_dumps)
+            preexec_fn=_disable_core_dumps, cwd=cwd)
         with selectors.DefaultSelector() as selector:
             for name in buffers:
                 stream = getattr(process, name)
@@ -93,17 +103,29 @@ def supervise(command, deadline, phase, expected):
                         result["output_limit"] = True
     except KeyboardInterrupt:
         result["interrupted"] = True
-        result["error"] = "supervisor interrupted"
+        result["error"] = result["error"] or "supervisor interrupted"
     except (OSError, ValueError) as error:
         result["error"] = str(error)
     finally:
         if process is not None:
             if not killed:
                 _kill_group(process, signal.SIGTERM)
-                time.sleep(min(GRACE, max(0, deadline - time.monotonic())))
+                try:
+                    time.sleep(min(GRACE, max(0, deadline - time.monotonic())))
+                except KeyboardInterrupt:
+                    result["interrupted"] = True
+                    result["error"] = result["error"] or "supervisor interrupted"
                 _kill_group(process, signal.SIGKILL)
             try:
                 process.wait(timeout=max(0.01, min(GRACE, deadline - time.monotonic())))
+            except KeyboardInterrupt:
+                result["interrupted"] = True
+                result["error"] = result["error"] or "supervisor interrupted"
+                _kill_group(process, signal.SIGKILL)
+                try:
+                    process.wait(timeout=GRACE)
+                except (subprocess.TimeoutExpired, KeyboardInterrupt):
+                    result["error"] = "direct child could not be reaped"
             except subprocess.TimeoutExpired:
                 result["error"] = "direct child could not be reaped"
             result["returncode"] = process.returncode
@@ -220,9 +242,20 @@ def write_report(report, directory):
             raise ValueError("reports must be outside the source tree or in a CMake build tree")
     directory.mkdir(parents=True, exist_ok=True)
     path = directory / ("linux_entry_argv-" + uuid.uuid4().hex + ".json")
-    with path.open("x", encoding="utf-8") as stream:
-        json.dump(report, stream, indent=2, allow_nan=False)
-        stream.write("\n")
-    with path.open(encoding="utf-8") as stream:
-        validate_report(json.load(stream))
+    temporary = directory / ("." + path.name + ".tmp")
+    created = False
+    try:
+        with temporary.open("x", encoding="utf-8") as stream:
+            created = True
+            json.dump(report, stream, indent=2, allow_nan=False)
+            stream.write("\n")
+        with temporary.open(encoding="utf-8") as stream:
+            validate_report(json.load(stream))
+        os.replace(temporary, path)
+    finally:
+        if created:
+            try:
+                temporary.unlink()
+            except FileNotFoundError:
+                pass
     return path

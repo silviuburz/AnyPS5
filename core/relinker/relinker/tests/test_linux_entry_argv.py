@@ -37,6 +37,7 @@ def run_fixture(relinker, report_directory, revision=None, dirty=None, configura
     from execution_harness import OUTPUT_LIMIT, GRACE, CLEANUP_BUDGET
     from execution_harness import file_hash, phase_passed, supervise, write_report
 
+    relinker = Path(relinker).resolve()
     started = time.monotonic()
     deadline = started + budget
     image = argv_fixture()
@@ -65,7 +66,7 @@ def run_fixture(relinker, report_directory, revision=None, dirty=None, configura
             source.write_bytes(image)
             conversion = supervise(
                 [str(relinker), "--skip-sce-module", str(source), str(output)],
-                deadline, "conversion", 0)
+                deadline, "conversion", 0, cwd=directory)
             report["phases"].append(conversion)
             if relinker.is_file():
                 report["identity"]["relinker_sha256"] = file_hash(relinker)
@@ -75,7 +76,8 @@ def run_fixture(relinker, report_directory, revision=None, dirty=None, configura
                 report["identity"]["generated_sha256"] = file_hash(output)
                 output.chmod(0o755)
                 for arguments, expected in ((["Z"], -signal.SIGTRAP), (["Z", "extra"], -signal.SIGILL)):
-                    phase = supervise([str(output), *arguments], deadline, " ".join(arguments), expected)
+                    phase = supervise([str(output), *arguments], deadline, " ".join(arguments),
+                                      expected, cwd=directory)
                     report["phases"].append(phase)
                     if not phase_passed(phase):
                         report["reason"] = phase_failure(phase)
@@ -87,20 +89,24 @@ def run_fixture(relinker, report_directory, revision=None, dirty=None, configura
             if report["elapsed_seconds"] > budget:
                 report["outcome"] = "FAIL"
                 report["reason"] = "total fixture budget exceeded"
-            path = write_report(report, report_directory)
     except (OSError, ValueError, KeyboardInterrupt) as error:
         report["outcome"] = "FAIL"
         report["reason"] = "supervisor/report error: " + str(error)
         report["elapsed_seconds"] = time.monotonic() - started
-        path = write_report(report, report_directory)
+    path = write_report(report, report_directory)
     print(report["outcome"] + ": " + report["reason"])
     print("Execution report:", path)
     return report, path
 
 
 def phase_failure(phase):
+    actual_signal = signal.Signals(phase["signal"]).name if phase["signal"] else None
+    expected_signal = (signal.Signals(-phase["expected_returncode"]).name
+                       if phase["expected_returncode"] is not None
+                       and phase["expected_returncode"] < 0 else None)
     return (f'{phase["case"]} failed: returncode={phase["returncode"]}, '
-            f'expected={phase["expected_returncode"]}, timeout={phase["timeout"]}, '
+            f'signal={actual_signal}, expected={phase["expected_returncode"]}, '
+            f'expected_signal={expected_signal}, timeout={phase["timeout"]}, '
             f'output_limit={phase["output_limit"]}, complete={phase["complete"]}, '
             f'error={phase["error"]}')
 
@@ -135,6 +141,9 @@ def main():
         report, _ = run_fixture(relinker, directory,
                                 None if options.revision == "unknown" else options.revision,
                                 dirty, options.configuration or None)
+    except (OSError, ValueError, KeyboardInterrupt) as error:
+        print("FAIL: execution report unavailable: " + str(error), file=sys.stderr)
+        return 1
     finally:
         signal.signal(signal.SIGTERM, previous)
     return 0 if report["outcome"] == "PASS" else 1

@@ -4,11 +4,13 @@ import contextlib
 import copy
 import io
 import json
+import os
 from pathlib import Path
 import signal
 import sys
 import tempfile
 import time
+import uuid
 import unittest
 from unittest.mock import patch
 
@@ -19,8 +21,26 @@ RELINKER = Path(sys.argv.pop(1)).resolve() if len(sys.argv) > 1 else None
 
 
 class SupervisorTests(unittest.TestCase):
-    def run_child(self, code, budget=2, expected=0):
-        return supervise([sys.executable, "-c", code], time.monotonic() + budget, "Z", expected)
+    def run_child(self, code, budget=2, expected=0, cwd=None):
+        return supervise([sys.executable, "-c", code], time.monotonic() + budget,
+                         "Z", expected, cwd=cwd)
+
+    def test_requested_working_directory_and_relative_output(self):
+        caller_cwd = Path.cwd()
+        with tempfile.TemporaryDirectory(prefix="anyps5-harness-cwd-") as directory:
+            output = "child-output.txt"
+            relative_executable = os.path.relpath(sys.executable, caller_cwd)
+            phase = supervise(
+                [relative_executable, "-c",
+                 "from pathlib import Path; Path('child-output.txt').write_text('isolated'); "
+                 "print(Path.cwd())"],
+                time.monotonic() + 2, "Z", 0, cwd=directory)
+            self.assertTrue(phase_passed(phase))
+            self.assertEqual(phase["stdout"].strip(), directory)
+            self.assertEqual((Path(directory) / output).read_text(), "isolated")
+            self.assertFalse((caller_cwd / output).exists())
+            self.assertEqual(Path.cwd(), caller_cwd)
+            self.assertTrue(Path(phase["command"][0]).is_absolute())
 
     def test_exact_exit_and_missing_expectation(self):
         phase = self.run_child("print('out'); import sys; print('err', file=sys.stderr)")
@@ -133,6 +153,33 @@ class SupervisorTests(unittest.TestCase):
         self.assertFalse(phase_passed(phase))
         self.assert_descendant_stopped(int(phase["stdout"]))
 
+    def test_second_interruption_during_cleanup_still_kills_group(self):
+        interruptions = 0
+
+        def interrupted(*_):
+            nonlocal interruptions
+            interruptions += 1
+            if interruptions == 2:
+                signal.setitimer(signal.ITIMER_REAL, 0)
+            raise KeyboardInterrupt
+
+        previous = signal.signal(signal.SIGALRM, interrupted)
+        try:
+            signal.setitimer(signal.ITIMER_REAL, 0.3, 0.05)
+            phase = self.run_child(
+                "import os, signal, time\n"
+                "if os.fork() == 0:\n"
+                " signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+                " print(os.getpid(), flush=True)\n"
+                "time.sleep(30)\n")
+        finally:
+            signal.setitimer(signal.ITIMER_REAL, 0)
+            signal.signal(signal.SIGALRM, previous)
+        self.assertGreaterEqual(interruptions, 2)
+        self.assertTrue(phase["interrupted"])
+        self.assertFalse(phase_passed(phase))
+        self.assert_descendant_stopped(int(phase["stdout"]))
+
     def test_missing_binary(self):
         phase = supervise(["/nonexistent/anyps5-relinker"], time.monotonic() + 2, "conversion", 0)
         self.assertFalse(phase_passed(phase))
@@ -172,12 +219,18 @@ class FixtureReportTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             validate_report(report)
 
+    def test_wrong_expectation_negative_control(self):
+        phase = copy.deepcopy(self.report["phases"][1])
+        self.assertEqual(phase["returncode"], -signal.SIGTRAP)
+        phase["expected_returncode"] = 0
+        self.assertFalse(phase_passed(phase))
+
     def test_conversion_failure_never_launches_guest(self):
         with tempfile.TemporaryDirectory(prefix="anyps5-failed-conversion-") as directory:
-            def failed_conversion(command, deadline, phase, expected):
+            def failed_conversion(command, deadline, phase, expected, cwd=None):
                 Path(command[-1]).write_bytes(b"stale output")
                 return supervise([sys.executable, "-c", "import sys; sys.exit(7)"],
-                                 deadline, phase, expected)
+                                 deadline, phase, expected, cwd=cwd)
 
             with patch("execution_harness.supervise", side_effect=failed_conversion) as mocked:
                 with contextlib.redirect_stdout(io.StringIO()):
@@ -200,19 +253,29 @@ class FixtureReportTests(unittest.TestCase):
                 "import os, signal; os.kill(os.getpid(), signal.SIGSEGV)",
                 "import time; time.sleep(30)"):
             with self.subTest(code=code):
-                def substituted(command, deadline, phase, expected):
+                def substituted(command, deadline, phase, expected, cwd=None):
                     if phase == "conversion":
-                        return supervise(command, deadline, phase, expected)
-                    return supervise([sys.executable, "-c", code], deadline, phase, expected)
+                        return supervise(command, deadline, phase, expected, cwd=cwd)
+                    return supervise([sys.executable, "-c", code], deadline, phase, expected,
+                                     cwd=cwd)
 
                 with patch("execution_harness.supervise", side_effect=substituted):
                     with contextlib.redirect_stdout(io.StringIO()):
                         report, path = run_fixture(RELINKER, self.directory.name, budget=1.0)
                 self.assertEqual(report["outcome"], "FAIL")
                 self.assertIn("Z failed", report["reason"])
+                if "SIGSEGV" in code:
+                    self.assertIn("signal=SIGSEGV", report["reason"])
+                    self.assertIn("expected_signal=SIGTRAP", report["reason"])
                 self.assertEqual(len(report["phases"]), 2)
                 self.assertLess(report["elapsed_seconds"], 1.0)
                 validate_report(json.loads(path.read_text()))
+
+    def test_report_write_failure_is_not_retried(self):
+        with patch("execution_harness.write_report", side_effect=ValueError("report destination rejected")) as writer:
+            with self.assertRaisesRegex(ValueError, "report destination rejected"):
+                run_fixture(RELINKER, self.directory.name)
+        self.assertEqual(writer.call_count, 1)
 
     def test_malformed_reports(self):
         for key in self.report:
@@ -260,6 +323,22 @@ class FixtureReportTests(unittest.TestCase):
             json.loads(self.path.read_text()[:-10])
         with self.assertRaises(ValueError):
             write_report(self.report, Path(__file__).parent)
+
+    def test_interrupted_report_write_leaves_no_partial_report(self):
+        with tempfile.TemporaryDirectory(prefix="anyps5-interrupted-report-") as directory:
+            with patch("execution_harness.json.dump", side_effect=KeyboardInterrupt):
+                with self.assertRaises(KeyboardInterrupt):
+                    write_report(self.report, directory)
+            self.assertEqual(list(Path(directory).iterdir()), [])
+
+    def test_report_temp_collision_preserves_existing_file(self):
+        with tempfile.TemporaryDirectory(prefix="anyps5-report-collision-") as directory:
+            temporary = Path(directory) / ("." + "linux_entry_argv-" + "0" * 32 + ".json.tmp")
+            temporary.write_text("reserved")
+            with patch("execution_harness.uuid.uuid4", return_value=uuid.UUID(int=0)):
+                with self.assertRaises(FileExistsError):
+                    write_report(self.report, directory)
+            self.assertEqual(temporary.read_text(), "reserved")
 
 
 if __name__ == "__main__":

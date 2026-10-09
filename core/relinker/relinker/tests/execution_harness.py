@@ -47,6 +47,8 @@ def supervise(command, deadline, phase, expected, cwd=None):
         executable = str(Path(executable).resolve())
     else:
         executable = shutil.which(executable) or executable
+        if os.path.exists(executable):
+            executable = str(Path(executable).resolve())
     command[0] = executable
     result = {
         "case": phase, "command": command, "expected_returncode": expected,

@@ -12,6 +12,8 @@ ctest --test-dir build-relinker --output-on-failure
 
 This mode builds the conversion tool and its tests on Linux, Windows and macOS, including Apple Silicon. macOS uses AppleClang from the Xcode command-line tools; Windows uses the MinGW-w64 toolchain below. The executable is `build-relinker/core/relinker/relinker` (`relinker.exe` on Windows with Ninja).
 
+With Python on Linux x86-64, CTest automatically includes the [bounded synthetic execution harness](EXECUTION_HARNESS.md#running-the-first-milestone). Its JSON reports are written to `build-relinker/tests/execution-reports/`. The deliberate SIGTRAP/SIGILL results check the synthetic argv contract, not PS5 equivalence. Other hosts retain the argv conversion check; configurations without Python visibly omit Python tests. This does not change the default build or require additional packages.
+
 The output remains x86-64 Linux ELF or Windows PE. Converted games need system libraries built for the target OS and a compatible x86-64 host. This mode does not build those libraries or provide macOS game execution. Tests inspect both output formats; execution checks run only on their compatible hosts.
 
 Use a separate build directory for the full build.
